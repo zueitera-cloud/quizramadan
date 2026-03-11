@@ -1,0 +1,41 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&family=Amiri:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-ramadan-teal text-ramadan-cream overflow-hidden;
+    font-family: "Cairo", sans-serif;
+    direction: rtl;
+  }
+}
+
+.mosque-frame {
+  @apply relative border-t-4 border-l-4 border-r-4 border-ramadan-gold rounded-t-[60px] md:rounded-t-[200px] p-4 md:p-12;
+  background: linear-gradient(to bottom, rgba(26, 77, 77, 0.8), rgba(26, 77, 77, 0.4));
+}
+
+.answer-btn-ramadan {
+  @apply relative w-full p-2.5 md:p-4 text-center border-2 border-ramadan-gold/50 bg-ramadan-teal/40 hover:bg-ramadan-gold/20 transition-all duration-300 text-base md:text-lg font-bold;
+  clip-path: polygon(10% 0%, 90% 0%, 100% 50%, 90% 100%, 10% 100%, 0% 50%);
+}
+
+.lifeline-circle {
+  @apply w-12 h-12 rounded-full border-2 border-ramadan-gold flex items-center justify-center bg-ramadan-teal/60 hover:bg-ramadan-gold/30 transition-all;
+}
+
+.sidebar-item {
+  @apply flex items-center justify-between px-4 py-1.5 text-sm transition-all border-b border-ramadan-gold/10;
+}
+
+.sidebar-item.active {
+  @apply bg-ramadan-gold text-ramadan-teal font-bold rounded-sm shadow-lg;
+}
+
+.arabic-title {
+  font-family: "Cairo", sans-serif;
+  @apply font-black tracking-widest text-4xl md:text-6xl text-ramadan-gold uppercase;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
