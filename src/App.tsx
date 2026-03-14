@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
+  Trash2,
+  Edit,
+  CheckSquare,
+  Square,
   Trophy, 
   HelpCircle, 
   Menu,
@@ -10,6 +14,7 @@ import {
   ChevronLeft, 
   Camera,
   Download,
+  Upload,
   User,
   X,
   Star,
@@ -65,6 +70,24 @@ const Lantern = ({ className }: { className?: string }) => (
 );
 
 export default function App() {
+  // --- Helper to Generate Randomized Questions ---
+  const generateRandomQuestions = (pool: Question[]) => {
+    const randomized: Question[] = [];
+    for (let i = 1; i <= 16; i++) {
+      const levelPool = pool.filter(q => q.difficulty === i);
+      if (levelPool.length > 0) {
+        randomized.push(levelPool[Math.floor(Math.random() * levelPool.length)]);
+      } else {
+        // Fallback to backup questions if specific level is missing in pool
+        const backupPool = QUESTIONS.filter(q => q.difficulty === i);
+        if (backupPool.length > 0) {
+          randomized.push(backupPool[Math.floor(Math.random() * backupPool.length)]);
+        }
+      }
+    }
+    return randomized;
+  };
+
   const [gameState, setGameState] = useState<GameState>('START');
   const [currentLevel, setCurrentLevel] = useState(0);
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('ramadan_player_name') || '');
@@ -85,10 +108,47 @@ export default function App() {
   const [leaderboardType, setLeaderboardType] = useState<'all' | 'week' | 'month'>('all');
   const [leaderboardData, setLeaderboardData] = useState<any[]>([]);
   const [isLeaderboardLoading, setIsLeaderboardLoading] = useState(false);
-  const [clickTracker, setClickTracker] = useState<{ [id: number]: number }>({});
-  const [currentQuestions, setCurrentQuestions] = useState<Question[]>([]);
-  const [isLoadingQuestions, setIsLoadingQuestions] = useState(true);
+  const [currentQuestions, setCurrentQuestions] = useState<Question[]>(() => {
+    // Initialize with local questions immediately to avoid delay
+    const randomized: Question[] = [];
+    for (let i = 1; i <= 16; i++) {
+      const pool = QUESTIONS.filter(q => q.difficulty === i);
+      if (pool.length > 0) {
+        randomized.push(pool[Math.floor(Math.random() * pool.length)]);
+      }
+    }
+    return randomized;
+  });
+  const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [adminClickCount, setAdminClickCount] = useState(0);
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [adminAccess, setAdminAccess] = useState<'NONE' | 'ADMIN' | 'VISITOR'>('NONE');
+  const [adminPasscode, setAdminPasscode] = useState('');
+  const [showAdminAuth, setShowAdminAuth] = useState(false);
+  const [allQuestions, setAllQuestions] = useState<any[]>([]);
+  const [selectedIds, setSelectedIds] = useState<(number | string)[]>([]);
+  const [selectedLeaderboardIds, setSelectedLeaderboardIds] = useState<(number | string)[]>([]);
+  const [editingId, setEditingId] = useState<number | string | null>(null);
+  const [pendingCsvQuestions, setPendingCsvQuestions] = useState<any[]>([]);
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+  const [newQuestion, setNewQuestion] = useState({
+    question: '',
+    options: ['', '', '', ''],
+    answer: 0,
+    difficulty: 1,
+    hint: ''
+  });
 
   const gameRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -100,18 +160,316 @@ export default function App() {
   };
 
   // --- Randomize Questions ---
-  const fetchQuestions = () => {
-    const randomized: Question[] = [];
-    for (let i = 1; i <= 16; i++) {
-      const pool = QUESTIONS.filter(q => q.difficulty === i);
-      if (pool.length > 0) {
-        const randomQ = pool[Math.floor(Math.random() * pool.length)];
-        randomized.push(randomQ);
+  const fetchQuestions = async () => {
+    // No longer setting isLoadingQuestions to true here to avoid blocking the UI
+    try {
+      const { data, error } = await supabase
+        .from('questions')
+        .select('*')
+        .order('difficulty', { ascending: true });
+      
+      if (!error && data && data.length > 0) {
+        setAllQuestions(data);
+        console.log('Loaded questions from Supabase');
+        
+        // Only update currentQuestions if the game hasn't started yet
+        // This avoids changing questions while the user is playing
+        setGameState(current => {
+          if (current === 'START') {
+            const randomized = generateRandomQuestions(data);
+            if (randomized.length > 0) {
+              setCurrentQuestions(randomized);
+            }
+          }
+          return current;
+        });
+      } else {
+        setAllQuestions([]);
+        console.log('Using local backup questions');
+      }
+    } catch (e) {
+      console.error('Error fetching questions:', e);
+    } finally {
+      setIsLoadingQuestions(false);
+    }
+  };
+
+  const handleAdminClick = () => {
+    const newCount = adminClickCount + 1;
+    setAdminClickCount(newCount);
+    if (newCount >= 5) {
+      setShowAdminAuth(true);
+      setAdminClickCount(0);
+    }
+    // إعادة التعيين بعد ثانيتين من عدم النقر
+    setTimeout(() => setAdminClickCount(0), 2000);
+  };
+
+  const verifyAdminCode = () => {
+    if (adminPasscode === '123456') {
+      setAdminAccess('ADMIN');
+      setIsAdminOpen(true);
+      setShowAdminAuth(false);
+      setAdminPasscode('');
+      showToast('تم الدخول بصلاحيات كاملة', 'success');
+    } else {
+      showToast('الكود غير صحيح', 'error');
+    }
+  };
+
+  const enterAsVisitor = () => {
+    setAdminAccess('VISITOR');
+    setIsAdminOpen(true);
+    setShowAdminAuth(false);
+    setAdminPasscode('');
+    showToast('تم الدخول كزائر (عرض فقط)', 'success');
+  };
+
+  const addQuestionToDb = async () => {
+    if (adminAccess !== 'ADMIN') {
+      showToast('عذراً، لا تملك صلاحية التعديل', 'error');
+      return;
+    }
+    if (!newQuestion.question || newQuestion.options.some(o => !o)) {
+      showToast('يرجى ملء جميع الحقول', 'error');
+      return;
+    }
+
+    if (editingId) {
+      setConfirmModal({
+        isOpen: true,
+        title: 'تأكيد التعديل',
+        message: 'هل أنت متأكد من حفظ التعديلات على هذا السؤال؟',
+        onConfirm: async () => {
+          try {
+            const { error } = await supabase
+              .from('questions')
+              .update(newQuestion)
+              .eq('id', editingId);
+            if (error) throw error;
+            showToast('تم تحديث السؤال بنجاح', 'success');
+            resetForm();
+            fetchQuestions();
+          } catch (e) {
+            console.error('Error updating question:', e);
+            showToast('فشل تحديث السؤال', 'error');
+          }
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        }
+      });
+    } else {
+      try {
+        const { error } = await supabase
+          .from('questions')
+          .insert([newQuestion]);
+        if (error) throw error;
+        showToast('تم إضافة السؤال بنجاح', 'success');
+        resetForm();
+        fetchQuestions();
+      } catch (e) {
+        console.error('Error adding question:', e);
+        showToast('فشل إضافة السؤال', 'error');
       }
     }
-    if (randomized.length > 0) {
-      setCurrentQuestions(randomized);
-      setIsLoadingQuestions(false);
+  };
+
+  const resetForm = () => {
+    setNewQuestion({
+      question: '',
+      options: ['', '', '', ''],
+      answer: 0,
+      difficulty: 1,
+      hint: ''
+    });
+    setEditingId(null);
+  };
+
+  const deleteSelectedQuestions = async () => {
+    if (adminAccess !== 'ADMIN') {
+      showToast('عذراً، لا تملك صلاحية الحذف', 'error');
+      return;
+    }
+    if (selectedIds.length === 0) return;
+    
+    setConfirmModal({
+      isOpen: true,
+      title: 'تأكيد الحذف',
+      message: `هل أنت متأكد من حذف ${selectedIds.length} سؤال مختار؟ لا يمكن التراجع عن هذه الخطوة.`,
+      onConfirm: async () => {
+        try {
+          const { error } = await supabase
+            .from('questions')
+            .delete()
+            .in('id', selectedIds);
+          
+          if (error) throw error;
+          showToast('تم حذف الأسئلة المختارة', 'success');
+          setSelectedIds([]);
+          fetchQuestions();
+        } catch (e) {
+          console.error('Error deleting questions:', e);
+          showToast('فشل الحذف - تأكد من الاتصال بقاعدة البيانات', 'error');
+        }
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      }
+    });
+  };
+
+  const deleteAllQuestions = async () => {
+    if (adminAccess !== 'ADMIN') {
+      showToast('عذراً، لا تملك صلاحية المسح الشامل', 'error');
+      return;
+    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'تأكيد المسح الشامل',
+      message: '⚠️ تحذير: هل أنت متأكد من مسح جميع الأسئلة من قاعدة البيانات؟ سيتم حذف كل شيء نهائياً.',
+      onConfirm: async () => {
+        try {
+          // استخدام فلتر يضمن حذف جميع السجلات
+          const { error } = await supabase
+            .from('questions')
+            .delete()
+            .not('id', 'is', null);
+          
+          if (error) throw error;
+          showToast('تم مسح جميع الأسئلة بنجاح', 'success');
+          setSelectedIds([]);
+          fetchQuestions();
+        } catch (e) {
+          console.error('Error clearing database:', e);
+          showToast('فشل مسح قاعدة البيانات', 'error');
+        }
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      }
+    });
+  };
+
+  const startEditing = (q: any) => {
+    setNewQuestion({
+      question: q.question,
+      options: q.options,
+      answer: q.answer,
+      difficulty: q.difficulty,
+      hint: q.hint || ''
+    });
+    setEditingId(q.id);
+    // Scroll to form
+    const formElement = document.getElementById('question-form');
+    if (formElement) formElement.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const toggleSelect = (id: number | string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === allQuestions.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(allQuestions.map(q => q.id));
+    }
+  };
+
+  const uploadOldQuestions = async () => {
+    if (adminAccess !== 'ADMIN') {
+      showToast('عذراً، لا تملك صلاحية الرفع', 'error');
+      return;
+    }
+    try {
+      const { error } = await supabase
+        .from('questions')
+        .insert(QUESTIONS.map(({ id, ...rest }) => rest));
+      
+      if (error) throw error;
+      showToast('تم رفع الأسئلة القديمة بنجاح', 'success');
+      fetchQuestions();
+    } catch (e) {
+      console.error('Error uploading questions:', e);
+      showToast('فشل الرفع (ربما الجدول موجود مسبقاً)', 'error');
+    }
+  };
+
+  const handleCsvUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target?.result as string;
+      const lines = text.split(/\r?\n/);
+      
+      const questionLines = lines.slice(1, 17);
+      const parsedQuestions = questionLines.map((line, index) => {
+        const parts = line.split(';');
+        if (parts.length < 6) return null;
+
+        return {
+          question: parts[0].trim(),
+          options: [parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim()],
+          answer: parseInt(parts[5].trim()) - 1,
+          difficulty: index + 1,
+          hint: parts[6] ? parts[6].trim() : ''
+        };
+      }).filter(q => q !== null);
+
+      if (parsedQuestions.length === 0) {
+        showToast('لم يتم العثور على أسئلة صالحة في الملف', 'error');
+        return;
+      }
+
+      setPendingCsvQuestions(parsedQuestions);
+      showToast(`تم قراءة ${parsedQuestions.length} سؤال. يرجى المراجعة والضغط على تأكيد الحفظ.`, 'success');
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
+  const confirmCsvUpload = async () => {
+    if (adminAccess !== 'ADMIN') {
+      showToast('عذراً، لا تملك صلاحية الحفظ', 'error');
+      return;
+    }
+    if (pendingCsvQuestions.length === 0) return;
+
+    try {
+      // 1. جلب الأسئلة الموجودة حالياً لتجنب التكرار
+      const { data: existingQuestions, error: fetchError } = await supabase
+        .from('questions')
+        .select('question');
+      
+      if (fetchError) throw fetchError;
+
+      const existingTexts = new Set(existingQuestions?.map(q => q.question.trim()) || []);
+      
+      // 2. تصفية الأسئلة الجديدة (فقط التي لا توجد في قاعدة البيانات)
+      const uniqueNewQuestions = pendingCsvQuestions.filter(q => !existingTexts.has(q.question.trim()));
+
+      if (uniqueNewQuestions.length === 0) {
+        showToast('جميع الأسئلة في الملف موجودة مسبقاً في قاعدة البيانات', 'error');
+        setPendingCsvQuestions([]);
+        return;
+      }
+
+      // 3. إدخال الأسئلة الفريدة فقط
+      const { error } = await supabase
+        .from('questions')
+        .insert(uniqueNewQuestions);
+      
+      if (error) throw error;
+      
+      const skippedCount = pendingCsvQuestions.length - uniqueNewQuestions.length;
+      showToast(
+        `تم حفظ ${uniqueNewQuestions.length} سؤال بنجاح${skippedCount > 0 ? ` (تم تخطي ${skippedCount} مكرر)` : ''}`, 
+        'success'
+      );
+      setPendingCsvQuestions([]);
+      fetchQuestions();
+    } catch (err) {
+      console.error('Error importing CSV:', err);
+      showToast('فشل حفظ الملف في قاعدة البيانات', 'error');
     }
   };
 
@@ -181,31 +539,36 @@ export default function App() {
     }
   };
 
-  const handleUsernameClick = async (id: number, username: string) => {
-    const newCount = (clickTracker[id] || 0) + 1;
-    if (newCount >= 5) {
-      try {
-        const { error } = await supabase
-          .from('leaderboard')
-          .delete()
-          .eq('id', id);
-        
-        if (error) throw error;
-        
-        showToast(`تم حذف بيانات ${username}`, 'success');
-        fetchLeaderboard();
-        setClickTracker(prev => {
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-      } catch (e) {
-        console.error('Delete failed', e);
-        showToast('فشل الحذف', 'error');
-      }
-    } else {
-      setClickTracker(prev => ({ ...prev, [id]: newCount }));
+  const deleteSelectedLeaderboard = async () => {
+    if (adminAccess !== 'ADMIN') {
+      showToast('عذراً، لا تملك صلاحية الحذف', 'error');
+      return;
     }
+    if (selectedLeaderboardIds.length === 0) return;
+    
+    setConfirmModal({
+      isOpen: true,
+      title: 'تأكيد حذف النتائج',
+      message: `هل أنت متأكد من حذف ${selectedLeaderboardIds.length} من النتائج المختارة؟`,
+      onConfirm: async () => {
+        try {
+          const { error } = await supabase
+            .from('leaderboard')
+            .delete()
+            .in('id', selectedLeaderboardIds);
+          
+          if (error) throw error;
+          
+          showToast('تم حذف النتائج بنجاح', 'success');
+          setSelectedLeaderboardIds([]);
+          fetchLeaderboard();
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        } catch (e) {
+          console.error('Delete failed', e);
+          showToast('فشل الحذف من قاعدة البيانات', 'error');
+        }
+      }
+    });
   };
 
   const playSound = (url: string, loop = false) => {
@@ -357,43 +720,444 @@ export default function App() {
   };
 
   // --- Screenshots & Certificate ---
+  const downloadCertificate = async () => {
+    const element = document.getElementById('certificate');
+    if (!element) return;
+    
+    try {
+      showToast('جاري تحضير الشهادة...', 'success');
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+      });
+      const image = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = image;
+      link.download = `شهادة_رمضان_${playerName}.png`;
+      link.click();
+      showToast('تم تحميل الشهادة بنجاح', 'success');
+    } catch (e) {
+      console.error('Download error:', e);
+      showToast('فشل تحميل الشهادة', 'error');
+    }
+  };
+
   const takeScreenshot = async (label: string) => {
     if (!gameRef.current) return;
     try {
-      await html2canvas(gameRef.current, {
-        logging: false,
-        useCORS: true,
-        allowTaint: true,
-      });
-      console.log(`Screenshot taken: ${label}`);
+      // html2canvas logic was here but seems broken or incomplete
+      // await html2canvas(gameRef.current);
+      console.log('Screenshot requested for:', label);
     } catch (e) {
-      console.error('Screenshot failed', e);
+      console.error('Screenshot error:', e);
     }
   };
 
-  const downloadCertificate = async () => {
-    const certElement = document.getElementById('certificate');
-    if (!certElement) return;
-    try {
-      const canvas = await html2canvas(certElement, {
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: '#ffffff',
-      });
-      const dataUrl = canvas.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = `${playerName}_Ramadan_Certificate.png`;
-      link.href = dataUrl;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (error) {
-      console.error('Error generating certificate:', error);
-    }
-  };
+  const renderAdminPanel = () => (
+    <>
+      <AnimatePresence>
+        {showAdminAuth && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-ramadan-teal border-2 border-ramadan-gold w-full max-w-md rounded-3xl p-8 text-center space-y-6"
+            >
+              <div className="flex justify-center">
+                <div className="w-16 h-16 bg-ramadan-gold/20 rounded-full flex items-center justify-center">
+                  <Zap className="w-8 h-8 text-ramadan-gold" />
+                </div>
+              </div>
+              <h3 className="text-2xl font-black text-ramadan-gold">لوحة التحكم المحمية</h3>
+              <p className="text-ramadan-cream text-sm">أدخل الكود السري للتحكم التام أو ادخل كزائر للمشاهدة فقط</p>
+              
+              <input 
+                type="password"
+                placeholder="أدخل الكود السري"
+                value={adminPasscode}
+                onChange={(e) => setAdminPasscode(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && verifyAdminCode()}
+                className="w-full bg-black/40 border border-ramadan-gold/40 rounded-xl py-3 px-4 text-center text-white text-xl tracking-[0.5em] focus:border-ramadan-gold outline-none"
+              />
 
-  // --- Render Helpers ---
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={verifyAdminCode}
+                  className="w-full bg-ramadan-gold text-ramadan-teal font-black py-3 rounded-xl hover:bg-ramadan-cream transition-all flex items-center justify-center gap-2"
+                >
+                  <CheckSquare className="w-5 h-5" />
+                  دخول (تحكم كامل)
+                </button>
+                <button 
+                  onClick={enterAsVisitor}
+                  className="w-full bg-white/10 text-white font-bold py-3 rounded-xl hover:bg-white/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <User className="w-5 h-5 text-ramadan-gold" />
+                  دخول كزائر (مشاهدة فقط)
+                </button>
+                <button 
+                  onClick={() => setShowAdminAuth(false)}
+                  className="w-full text-white/50 hover:text-white text-sm transition-all"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {confirmModal.isOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 z-[300] flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-ramadan-teal border-2 border-ramadan-gold w-full max-w-md rounded-3xl p-6 text-center"
+            >
+              <h3 className="text-xl font-black text-ramadan-gold mb-4">{confirmModal.title}</h3>
+              <p className="text-white mb-8">{confirmModal.message}</p>
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => {
+                    confirmModal.onConfirm();
+                  }}
+                  className="flex-1 bg-ramadan-gold text-ramadan-teal font-black py-3 rounded-xl hover:bg-ramadan-cream transition-all"
+                >
+                  تأكيد
+                </button>
+                <button 
+                  onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                  className="flex-1 bg-white/10 text-white font-bold py-3 rounded-xl hover:bg-white/20 transition-all"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isAdminOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/95 z-[200] flex items-center justify-center p-4 overflow-y-auto"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-ramadan-teal border-2 border-ramadan-gold w-full max-w-2xl rounded-3xl p-4 md:p-8 relative my-4 md:my-8 max-h-[95vh] overflow-y-auto custom-scrollbar"
+            >
+              <button 
+                onClick={() => {
+                  setIsAdminOpen(false);
+                  setAdminAccess('NONE');
+                }}
+                className="absolute top-2 md:top-4 left-2 md:left-4 p-2 text-ramadan-gold hover:bg-white/10 rounded-full z-10"
+              >
+                <X className="w-5 h-5 md:w-6 md:h-6" />
+              </button>
+
+              <h2 className="text-xl md:text-3xl font-black text-ramadan-gold text-center mb-1 md:mb-2">لوحة تحكم المسابقة</h2>
+              <p className="text-center text-[10px] md:text-xs text-ramadan-cream/60 mb-4 md:mb-8">
+                {adminAccess === 'ADMIN' ? 'وضع التحكم الكامل' : 'وضع الزائر (للمشاهدة فقط)'}
+              </p>
+
+              {/* Leaderboard Management */}
+              <div className="mb-6 md:mb-10 bg-black/30 rounded-2xl md:rounded-3xl p-3 md:p-6 border border-ramadan-gold/20">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+                  <h3 className="text-ramadan-gold text-sm md:text-base font-bold flex items-center gap-2">
+                    <Trophy className="w-4 h-4 md:w-5 md:h-5" />
+                    إدارة لائحة الأوائل ({leaderboardData.length})
+                  </h3>
+                  <div className="flex flex-wrap gap-1.5 md:gap-2">
+                    {selectedLeaderboardIds.length > 0 && adminAccess === 'ADMIN' && (
+                      <button 
+                        onClick={deleteSelectedLeaderboard}
+                        className="text-[10px] md:text-xs bg-ramadan-red/80 px-2 md:px-3 py-1 rounded-lg hover:bg-ramadan-red transition-all flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
+                        حذف المختار ({selectedLeaderboardIds.length})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="max-h-40 md:max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                  {isLeaderboardLoading ? (
+                    <div className="flex flex-col items-center justify-center py-4">
+                      <RefreshCw className="w-5 h-5 text-ramadan-gold animate-spin" />
+                    </div>
+                  ) : leaderboardData.length === 0 ? (
+                    <p className="text-white/40 text-center text-xs py-4">لا توجد نتائج حالياً</p>
+                  ) : (
+                    leaderboardData.map((entry) => (
+                      <div key={entry.id} className={`flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-xl border transition-all ${selectedLeaderboardIds.includes(entry.id) ? 'bg-ramadan-gold/10 border-ramadan-gold' : 'bg-black/20 border-white/5'}`}>
+                        {adminAccess === 'ADMIN' && (
+                          <button 
+                            onClick={() => {
+                              setSelectedLeaderboardIds(prev => 
+                                prev.includes(entry.id) ? prev.filter(id => id !== entry.id) : [...prev, entry.id]
+                              );
+                            }} 
+                            className="text-ramadan-gold"
+                          >
+                            {selectedLeaderboardIds.includes(entry.id) ? <CheckSquare className="w-4 h-4 md:w-5 md:h-5" /> : <Square className="w-4 h-4 md:w-5 md:h-5" />}
+                          </button>
+                        )}
+                        <div className="flex-1 min-w-0 flex justify-between items-center">
+                          <p className="text-white text-xs md:text-sm font-bold truncate">{entry.username}</p>
+                          <p className="text-ramadan-gold text-[10px] md:text-xs font-black">{entry.score} نقطة</p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {pendingCsvQuestions.length > 0 && adminAccess === 'ADMIN' && (
+                <div className="mb-6 md:mb-8 p-3 md:p-4 bg-ramadan-gold/10 border border-ramadan-gold rounded-2xl">
+                  <h3 className="text-ramadan-gold text-sm md:text-base font-bold mb-3 md:mb-4 flex items-center gap-2">
+                    <Moon className="w-4 h-4 md:w-5 md:h-5" />
+                    مراجعة الأسئلة المستوردة ({pendingCsvQuestions.length})
+                  </h3>
+                  <div className="max-h-[30vh] md:max-h-[40vh] overflow-y-auto space-y-2 mb-4 pr-2 custom-scrollbar bg-black/20 p-2 md:p-3 rounded-xl border border-white/10">
+                    {pendingCsvQuestions.map((q, i) => (
+                      <div key={i} className="text-[10px] md:text-xs bg-black/30 p-2 rounded-lg border border-white/5">
+                        <p className="text-white font-bold mb-1">{i + 1}. {q.question}</p>
+                        <p className="text-ramadan-cream opacity-70">المستوى: {q.difficulty} | الإجابة: {q.options[q.answer]}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={confirmCsvUpload}
+                      className="flex-1 bg-ramadan-gold text-ramadan-teal font-black py-2 rounded-xl hover:bg-ramadan-cream transition-all text-sm"
+                    >
+                      تأكيد وحفظ الكل
+                    </button>
+                    <button 
+                      onClick={() => setPendingCsvQuestions([])}
+                      className="px-3 md:px-4 py-2 bg-ramadan-red text-white rounded-xl hover:bg-opacity-80 transition-all text-sm"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Question Management List */}
+              <div className="mb-6 md:mb-10 bg-black/30 rounded-2xl md:rounded-3xl p-3 md:p-6 border border-ramadan-gold/20">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+                  <h3 className="text-ramadan-gold text-sm md:text-base font-bold flex items-center gap-2">
+                    <Star className="w-4 h-4 md:w-5 md:h-5" />
+                    الأسئلة الحالية ({allQuestions.length})
+                  </h3>
+                  <div className="flex flex-wrap gap-1.5 md:gap-2">
+                    <button 
+                      onClick={toggleSelectAll}
+                      className="text-[10px] md:text-xs bg-white/10 px-2 md:px-3 py-1 rounded-lg hover:bg-white/20 transition-all flex items-center gap-1"
+                    >
+                      {selectedIds.length === allQuestions.length ? <CheckSquare className="w-3 h-3 md:w-4 md:h-4" /> : <Square className="w-3 h-3 md:w-4 md:h-4" />}
+                      تحديد الكل
+                    </button>
+                    {selectedIds.length > 0 && adminAccess === 'ADMIN' && (
+                      <button 
+                        onClick={deleteSelectedQuestions}
+                        className="text-[10px] md:text-xs bg-ramadan-red/80 px-2 md:px-3 py-1 rounded-lg hover:bg-ramadan-red transition-all flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
+                        حذف ({selectedIds.length})
+                      </button>
+                    )}
+                    {adminAccess === 'ADMIN' && (
+                      <button 
+                        onClick={deleteAllQuestions}
+                        className="text-[10px] md:text-xs bg-ramadan-red px-2 md:px-3 py-1 rounded-lg hover:bg-opacity-80 transition-all flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
+                        مسح الكل
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="max-h-60 md:max-h-80 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                  {isLoadingQuestions ? (
+                    <div className="flex flex-col items-center justify-center py-6 md:py-10 space-y-3">
+                      <RefreshCw className="w-6 h-6 md:w-8 md:h-8 text-ramadan-gold animate-spin" />
+                      <p className="text-white/60 text-[10px] md:text-sm">جاري تحميل الأسئلة...</p>
+                    </div>
+                  ) : allQuestions.length === 0 ? (
+                    <div className="text-center py-6 md:py-10 bg-black/20 rounded-2xl border border-dashed border-white/10">
+                      <HelpCircle className="w-8 h-8 md:w-12 md:h-12 text-white/20 mx-auto mb-2" />
+                      <p className="text-white/40 text-xs md:text-sm">لا توجد أسئلة في قاعدة البيانات</p>
+                    </div>
+                  ) : (
+                    allQuestions.map((q) => (
+                      <div key={q.id} className={`flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-xl border transition-all ${selectedIds.includes(q.id) ? 'bg-ramadan-gold/10 border-ramadan-gold' : 'bg-black/20 border-white/5'}`}>
+                        <button onClick={() => toggleSelect(q.id)} className="text-ramadan-gold">
+                          {selectedIds.includes(q.id) ? <CheckSquare className="w-4 h-4 md:w-5 md:h-5" /> : <Square className="w-4 h-4 md:w-5 md:h-5" />}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-xs md:text-sm font-bold truncate">{q.question}</p>
+                          <p className="text-[9px] md:text-[10px] text-ramadan-cream/60">المستوى: {q.difficulty} | {q.options[q.answer]}</p>
+                        </div>
+                        <div className="flex gap-1 md:gap-2">
+                          {adminAccess === 'ADMIN' && (
+                            <button 
+                              onClick={() => startEditing(q)}
+                              className="p-1.5 md:p-2 bg-white/10 rounded-lg hover:bg-ramadan-gold hover:text-ramadan-teal transition-all"
+                              title="تعديل"
+                            >
+                              <Edit className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div id="question-form" className="space-y-3 md:space-y-4 bg-black/20 p-4 md:p-6 rounded-2xl md:rounded-3xl border border-ramadan-gold/10">
+                <h3 className="text-ramadan-gold text-sm md:text-base font-bold mb-1 md:mb-2">
+                  {editingId ? 'تعديل السؤال' : 'إضافة سؤال جديد'}
+                </h3>
+                <div>
+                  <label className="block text-ramadan-gold mb-1 text-xs md:text-sm font-bold">السؤال:</label>
+                  <textarea 
+                    value={newQuestion.question}
+                    onChange={(e) => setNewQuestion({...newQuestion, question: e.target.value})}
+                    className="w-full bg-black/20 border border-ramadan-gold/40 rounded-xl p-2 md:p-3 text-white text-sm focus:border-ramadan-gold outline-none"
+                    rows={2}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-4">
+                  {newQuestion.options.map((opt, i) => (
+                    <div key={i}>
+                      <label className="block text-ramadan-gold mb-0.5 md:mb-1 text-[10px] md:text-xs">الخيار {i + 1}:</label>
+                      <input 
+                        type="text"
+                        value={opt}
+                        onChange={(e) => {
+                          const opts = [...newQuestion.options];
+                          opts[i] = e.target.value;
+                          setNewQuestion({...newQuestion, options: opts});
+                        }}
+                        className="w-full bg-black/20 border border-ramadan-gold/40 rounded-xl p-1.5 md:p-2 text-white text-sm focus:border-ramadan-gold outline-none"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-4">
+                  <div>
+                    <label className="block text-ramadan-gold mb-0.5 md:mb-1 text-[10px] md:text-xs">الإجابة الصحيحة (0-3):</label>
+                    <select 
+                      value={newQuestion.answer}
+                      onChange={(e) => setNewQuestion({...newQuestion, answer: parseInt(e.target.value)})}
+                      className="w-full bg-black/20 border border-ramadan-gold/40 rounded-xl p-1.5 md:p-2 text-white text-sm focus:border-ramadan-gold outline-none"
+                    >
+                      {[0,1,2,3].map(i => <option key={i} value={i} className="bg-ramadan-teal">الخيار {i + 1}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-ramadan-gold mb-0.5 md:mb-1 text-[10px] md:text-xs">المستوى (1-16):</label>
+                    <input 
+                      type="number"
+                      min="1" max="16"
+                      value={newQuestion.difficulty}
+                      onChange={(e) => setNewQuestion({...newQuestion, difficulty: parseInt(e.target.value)})}
+                      className="w-full bg-black/20 border border-ramadan-gold/40 rounded-xl p-1.5 md:p-2 text-white text-sm focus:border-ramadan-gold outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-ramadan-gold mb-0.5 md:mb-1 text-[10px] md:text-xs">تلميح (Hint):</label>
+                    <input 
+                      type="text"
+                      value={newQuestion.hint}
+                      onChange={(e) => setNewQuestion({...newQuestion, hint: e.target.value})}
+                      className="w-full bg-black/20 border border-ramadan-gold/40 rounded-xl p-1.5 md:p-2 text-white text-sm focus:border-ramadan-gold outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 md:gap-4 pt-2 md:pt-4">
+                  {adminAccess === 'ADMIN' ? (
+                    <>
+                      <button 
+                        onClick={addQuestionToDb}
+                        className={`flex-1 font-black py-2.5 md:py-3 rounded-xl transition-all text-sm md:text-base ${editingId ? 'bg-ramadan-cream text-ramadan-teal' : 'bg-ramadan-gold text-ramadan-teal hover:bg-ramadan-cream'}`}
+                      >
+                        {editingId ? 'تحديث السؤال' : 'إضافة السؤال'}
+                      </button>
+                      
+                      {editingId && (
+                        <button 
+                          onClick={() => {
+                            setEditingId(null);
+                            setNewQuestion({
+                              question: '',
+                              options: ['', '', '', ''],
+                              answer: 0,
+                              difficulty: 1,
+                              hint: ''
+                            });
+                          }}
+                          className="bg-white/10 text-white px-4 md:px-6 py-2.5 md:py-3 rounded-xl hover:bg-white/20 transition-all text-sm md:text-base"
+                        >
+                          إلغاء التعديل
+                        </button>
+                      )}
+                      
+                      <label className="cursor-pointer bg-ramadan-green text-white px-3 md:px-4 py-2.5 md:py-3 rounded-xl hover:bg-opacity-80 transition-all text-xs md:text-sm flex items-center gap-2">
+                        <Upload className="w-4 h-4" />
+                        رفع ملف CSV
+                        <input 
+                          type="file" 
+                          accept=".csv" 
+                          className="hidden" 
+                          onChange={handleCsvUpload}
+                        />
+                      </label>
+
+                      <button 
+                        onClick={uploadOldQuestions}
+                        className="bg-white/10 text-white px-3 md:px-4 py-2.5 md:py-3 rounded-xl hover:bg-white/20 transition-all text-xs md:text-sm"
+                      >
+                        رفع الأسئلة القديمة
+                      </button>
+                    </>
+                  ) : (
+                    <div className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-center">
+                      <p className="text-ramadan-cream/60 text-xs md:text-sm">أنت في وضع الزائر، لا يمكنك إضافة أو تعديل الأسئلة</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+
   const renderLeaderboardModal = () => (
     <AnimatePresence>
       {showLeaderboard && (
@@ -452,8 +1216,7 @@ export default function App() {
                       <div className="flex items-center gap-3 md:gap-4">
                         <span className="text-ramadan-gold font-bold w-6">{idx + 1}</span>
                         <span 
-                          className="text-white font-bold cursor-pointer select-none hover:text-ramadan-gold transition-colors"
-                          onClick={() => handleUsernameClick(entry.id, entry.username)}
+                          className="text-white font-bold select-none"
                         >
                           {entry.username}
                         </span>
@@ -514,8 +1277,14 @@ export default function App() {
           </div>
           
           <div className="space-y-2">
-            <h1 className="arabic-title">مسابقة رمضان</h1>
+            <h1 
+              className="arabic-title cursor-pointer select-none"
+              onClick={handleAdminClick}
+            >
+              مسابقة رمضان
+            </h1>
             <p className="text-ramadan-gold text-sm tracking-widest uppercase font-bold">Ramadan Trivia</p>
+            <p className="text-ramadan-cream/80 text-xs mt-1 font-bold">برمجة واعداد: أ. أحمد زعيتر</p>
           </div>
 
           <div className="space-y-4">
@@ -555,6 +1324,7 @@ export default function App() {
         </motion.div>
 
         {renderLeaderboardModal()}
+        {renderAdminPanel()}
       </div>
     );
   }
@@ -607,7 +1377,7 @@ export default function App() {
               </div>
             </div>
             <div className="mt-4 text-center">
-              <button onClick={downloadCertificate} className="flex items-center justify-center gap-2 bg-ramadan-gold text-ramadan-teal px-6 py-2 rounded-full font-bold mx-auto">
+              <button onClick={downloadCertificate} className="flex items-center justify-center gap-2 bg-ramadan-gold text-ramadan-teal px-6 py-2 rounded-full font-bold mx-auto hover:bg-ramadan-cream transition-all shadow-lg">
                 <Download className="w-5 h-5" /> تحميل الشهادة
               </button>
             </div>
