@@ -1267,10 +1267,16 @@ export default function App() {
               initial={{ y: 20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               transition={{ delay: 0.2 }}
-              src="https://github.com/zueitera-cloud/Ramadan/blob/main/Fashkol.png?raw=true" 
+              src="https://raw.githubusercontent.com/zueitera-cloud/Ramadan/main/Fashkol.png" 
               alt="Fashkol" 
+              loading="eager"
+              fetchPriority="high"
               className="w-40 h-40 mx-auto rounded-full border-4 border-ramadan-gold shadow-2xl object-cover bg-ramadan-teal/50"
               referrerPolicy="no-referrer"
+              onError={(e) => {
+                // Fallback to a themed placeholder if the main image fails
+                (e.target as HTMLImageElement).src = "https://picsum.photos/seed/ramadan/200/200";
+              }}
             />
             <Moon className="absolute -bottom-2 -right-2 w-12 h-12 text-ramadan-gold fill-ramadan-gold drop-shadow-lg" />
             <Star className="absolute -top-2 -left-2 w-8 h-8 text-ramadan-gold fill-ramadan-gold animate-pulse" />
